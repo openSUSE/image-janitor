@@ -248,4 +248,73 @@ mod tests {
         assert!(mod_c_path.exists());
         assert!(!mod_d_path.exists());
     }
+
+    #[test]
+    fn test_cleanup_drivers_large_parallel() {
+        let temp_dir = tempdir().unwrap();
+        let module_dir = temp_dir.path();
+        let kernel_dir = module_dir.join("6.1.0-test");
+        fs::create_dir_all(&kernel_dir).unwrap();
+
+        let mut responses = HashMap::new();
+        let mut modules = Vec::new();
+
+        // Create 100 modules to ensure parallelism is used
+        for i in 0..100 {
+            let mod_path = kernel_dir.join(format!("mod{}.ko", i));
+            fs::write(&mod_path, "").unwrap();
+            modules.push(mod_path.clone());
+
+            // mod(i) depends on mod(i+1) if i < 99
+            let deps = if i < 99 {
+                format!("mod{}", i + 1)
+            } else {
+                "".to_string()
+            };
+
+            responses.insert(
+                format!("/usr/sbin/modinfo -F depends {}", mod_path.display()),
+                deps,
+            );
+        }
+        responses.insert("arch".to_string(), "x86_64".to_string());
+
+        let config_path = temp_dir.path().join("test.conf");
+        // Only keep mod0. Because of dependencies, everything from mod0 to mod99 should be kept.
+        fs::write(&config_path, "mod0.ko").unwrap();
+
+        let runner = MockCommandRunner { responses };
+
+        // Test delete - should keep all modules because mod0 depends on mod1, mod1 on mod2, ..., mod99 on nothing
+        cleanup_drivers(&[config_path.to_str().unwrap()], module_dir, true, &runner).unwrap();
+
+        for mod_path in modules {
+            assert!(
+                mod_path.exists(),
+                "Module {} should have been kept",
+                mod_path.display()
+            );
+        }
+
+        // Now test deleting everything by having an empty config
+        let config_path_empty = temp_dir.path().join("empty.conf");
+        fs::write(&config_path_empty, "nothing.ko").unwrap();
+
+        cleanup_drivers(
+            &[config_path_empty.to_str().unwrap()],
+            module_dir,
+            true,
+            &runner,
+        )
+        .unwrap();
+
+        for i in 0..100 {
+            let mod_path = kernel_dir.join(format!("mod{}.ko", i));
+            assert!(
+                !mod_path.exists(),
+                "Module {} should have been deleted",
+                mod_path.display()
+            );
+        }
+    }
 }

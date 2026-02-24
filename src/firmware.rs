@@ -604,4 +604,44 @@ mod tests {
         assert!(resolved.contains(&file_path));
         assert!(resolved.contains(&link_path));
     }
+
+    #[test]
+    fn test_get_required_firmware_large_parallel() {
+        let temp_dir = tempdir().unwrap();
+        let kernel_dir = temp_dir.path().join("lib/modules/6.1.0-test");
+        fs::create_dir_all(&kernel_dir).unwrap();
+        let fw_dir = temp_dir.path().join("lib/firmware");
+        fs::create_dir_all(&fw_dir).unwrap();
+
+        let mut responses = HashMap::new();
+        let mut expected_fw = HashSet::new();
+
+        // Create 100 modules and 100 firmware files
+        for i in 0..100 {
+            let mod_path = kernel_dir.join(format!("mod{}.ko", i));
+            fs::write(&mod_path, "").unwrap();
+
+            let fw_name = format!("fw{}.bin", i);
+            let fw_path = fw_dir.join(&fw_name);
+            fs::write(&fw_path, "").unwrap();
+            expected_fw.insert(fw_path.clone());
+
+            responses.insert(
+                format!("/usr/sbin/modinfo -F firmware {}", mod_path.display()),
+                fw_name,
+            );
+        }
+
+        let runner = MockCommandRunner { responses };
+
+        let required_fw = get_required_firmware(&kernel_dir, &fw_dir, &runner).unwrap();
+        assert_eq!(required_fw.len(), 100);
+        for fw_path in expected_fw {
+            assert!(
+                required_fw.contains(&fw_path),
+                "Missing firmware {}",
+                fw_path.display()
+            );
+        }
+    }
 }
