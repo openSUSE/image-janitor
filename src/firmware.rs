@@ -92,7 +92,10 @@ fn get_required_firmware(
     };
 
     let results: Result<Vec<HashSet<PathBuf>>, JanitorError> = if no_parallel {
-        kernel_modules.into_iter().map(|p| process_module(&p)).collect()
+        kernel_modules
+            .into_iter()
+            .map(|p| process_module(&p))
+            .collect()
     } else {
         kernel_modules
             .into_par_iter()
