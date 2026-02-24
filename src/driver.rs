@@ -7,7 +7,6 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::thread;
-use walkdir::WalkDir;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct Driver {
@@ -66,9 +65,7 @@ pub fn cleanup_drivers(
     info!("Scanning kernel modules in {}", kernel_dir.display());
 
     let mut module_paths = Vec::new();
-    for entry in WalkDir::new(&kernel_dir) {
-        let entry = entry?;
-        let path = entry.path();
+    for path in util::walk_dir(&kernel_dir)? {
         if path.is_file()
             && (path.extension().is_some_and(|e| e == "ko")
                 || path.to_str().is_some_and(|s| s.ends_with(".ko.xz"))

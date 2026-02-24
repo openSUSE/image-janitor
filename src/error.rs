@@ -9,9 +9,6 @@ pub enum JanitorError {
     #[error("Regex error")]
     Regex(#[from] regex::Error),
 
-    #[error("Walkdir error")]
-    Walkdir(#[from] walkdir::Error),
-
     #[error("Command failed: {0}")]
     Command(String),
 

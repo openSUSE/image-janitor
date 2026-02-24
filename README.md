@@ -69,6 +69,28 @@ cargo build --release
 
 The executable will be located in the `target/release` directory.
 
+## Benchmarks
+
+A benchmark for testing the performance of parallelism is available. It can use real kernel and firmware packages from openSUSE Tumbleweed.
+
+To run the benchmark, you first need to download and extract the packages (requires `rpm2cpio` and `cpio`):
+
+```bash
+IMAGE_JANITOR_BENCH_EXTRACT=1 cargo bench --bench parallelism
+```
+
+Subsequent runs can omit the extraction step:
+
+```bash
+cargo bench --bench parallelism
+```
+
+By default, the benchmark data is stored in `/tmp/image-janitor-bench`. You can change this using the `IMAGE_JANITOR_BENCH_DIR` environment variable.
+
+If you want to re-run the extraction without deleting previously extracted files (e.g. if you added more packages manually), you can set `IMAGE_JANITOR_BENCH_NO_CLEAN=1`.
+
+You can also specify an alternative mirror for downloading the packages using the `IMAGE_JANITOR_BENCH_MIRROR` environment variable (it should point to the root of the Tumbleweed `oss` repository).
+
 ## Configuration
 
 The configuration files use a simple format. Each line contains a regular expression that is matched against the path of a file. If the path matches a regular expression, the file is kept. If the path does not match any regular expression, the file is deleted.

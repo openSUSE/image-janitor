@@ -7,19 +7,16 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::thread;
-use walkdir::WalkDir;
 
 fn find_kernel_modules(kernel_dir: &Path) -> Result<Vec<PathBuf>, JanitorError> {
     let mut modules = Vec::new();
-    for entry in WalkDir::new(kernel_dir) {
-        let entry = entry?;
-        let path = entry.path();
+    for path in util::walk_dir(kernel_dir)? {
         if path.is_file()
             && (path.extension().is_some_and(|e| e == "ko")
                 || path.to_str().is_some_and(|s| s.ends_with(".ko.xz"))
                 || path.to_str().is_some_and(|s| s.ends_with(".ko.zst")))
         {
-            modules.push(path.to_path_buf());
+            modules.push(path);
         }
     }
     Ok(modules)
@@ -173,12 +170,11 @@ fn remove_unused_files(
     info!("Scanning for unused firmware files...");
     let mut unused_size = 0;
 
-    for entry in WalkDir::new(fw_dir).into_iter().filter_map(Result::ok) {
-        let path = entry.path();
+    for path in util::walk_dir(fw_dir)? {
         if path.is_file() {
             let relative_path = path.strip_prefix(fw_dir).unwrap().to_path_buf();
             if !required_fw.contains(&relative_path) {
-                unused_size += fs::metadata(path)?.len();
+                unused_size += fs::metadata(&path)?.len();
                 if delete {
                     debug!("Deleting unused firmware {}", path.display());
                     fs::remove_file(path)?;
@@ -194,15 +190,30 @@ fn remove_unused_files(
 fn remove_dangling_symlinks(fw_dir: &Path) -> Result<(), JanitorError> {
     info!("Removing dangling symlinks...");
     let mut dangling_symlinks = 0;
-    for entry in WalkDir::new(fw_dir).into_iter().filter_map(Result::ok) {
-        let path = entry.path();
-        if path.is_symlink() {
-            // fs::metadata follows symlinks, so it will return an error for a dangling one.
-            if fs::metadata(path).is_err() {
-                debug!("Deleting dangling symlink {}", path.display());
-                dangling_symlinks += 1;
-                fs::remove_file(path)?;
+    // WalkDir used to handle symlinks differently.
+    // My walk_dir skips directories but returns all files.
+    // I need to also check for symlinks that might be directories or files.
+
+    fn collect_symlinks(dir: &Path) -> Result<Vec<PathBuf>, JanitorError> {
+        let mut symlinks = Vec::new();
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_symlink() {
+                symlinks.push(path);
+            } else if path.is_dir() {
+                symlinks.extend(collect_symlinks(&path)?);
             }
+        }
+        Ok(symlinks)
+    }
+
+    for path in collect_symlinks(fw_dir)? {
+        // fs::metadata follows symlinks, so it will return an error for a dangling one.
+        if fs::metadata(&path).is_err() {
+            debug!("Deleting dangling symlink {}", path.display());
+            dangling_symlinks += 1;
+            fs::remove_file(path)?;
         }
     }
     info!("Removed {} dangling symlinks", dangling_symlinks);
@@ -211,14 +222,21 @@ fn remove_dangling_symlinks(fw_dir: &Path) -> Result<(), JanitorError> {
 
 fn remove_empty_directories(fw_dir: &Path) -> Result<(), JanitorError> {
     info!("Removing empty directories...");
-    // We need to walk from the deepest directories up to ensure parent directories become empty.
-    let mut dirs_to_check: Vec<PathBuf> = WalkDir::new(fw_dir)
-        .into_iter()
-        .filter_map(Result::ok)
-        // ignore symlinks, they are processed separately
-        .filter(|e| e.path().is_dir() && !e.path().is_symlink())
-        .map(|e| e.path().to_path_buf())
-        .collect();
+
+    fn collect_dirs(dir: &Path) -> Result<Vec<PathBuf>, JanitorError> {
+        let mut dirs = Vec::new();
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() && !path.is_symlink() {
+                dirs.push(path.clone());
+                dirs.extend(collect_dirs(&path)?);
+            }
+        }
+        Ok(dirs)
+    }
+
+    let mut dirs_to_check = collect_dirs(fw_dir)?;
 
     // Sort by depth, deepest first.
     dirs_to_check.sort_by_key(|p| std::cmp::Reverse(p.components().count()));

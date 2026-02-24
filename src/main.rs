@@ -73,13 +73,7 @@ fn main() -> Result<()> {
                 !cli.no_parallel
             );
             let config_paths: Vec<&str> = config_files.split(',').collect();
-            driver::cleanup_drivers(
-                &config_paths,
-                module_dir,
-                *delete,
-                cli.no_parallel,
-                &runner,
-            )?;
+            driver::cleanup_drivers(&config_paths, module_dir, *delete, cli.no_parallel, &runner)?;
         }
         Commands::FwCleanup {
             delete,
