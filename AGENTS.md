@@ -10,4 +10,4 @@
 - Add or update tests for the code you change, even if nobody asked.
 
 ## Commit instruction
-- Always run `cargo clippy` and `cargo test` before committing.
+- Always run `cargo clippy` and `cargo test` before committing. Ensure code changes are properly formatted with `cargo fmt`.
