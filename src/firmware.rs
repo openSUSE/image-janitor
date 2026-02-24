@@ -3,10 +3,10 @@ use crate::error::JanitorError;
 use crate::util;
 use log::{debug, info};
 use path_clean::PathClean;
+use rayon::prelude::*;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::thread;
 
 fn find_kernel_modules(kernel_dir: &Path) -> Result<Vec<PathBuf>, JanitorError> {
     let mut modules = Vec::new();
@@ -72,48 +72,35 @@ fn get_required_firmware(
         return Ok(HashSet::new());
     }
 
-    let num_threads = if no_parallel {
-        1
+    if no_parallel {
+        info!("Using 1 thread for finding used firmware");
     } else {
-        thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1)
-    };
-    info!("Using {} threads for finding used firmware", num_threads);
+        info!("Using multiple threads for finding used firmware");
+    }
 
-    // compute how much modules to process per thread
-    let chunk_size = kernel_modules.len().div_ceil(num_threads);
-
-    let results = thread::scope(|s| {
-        let mut handles = Vec::new();
-        for chunk in kernel_modules.chunks(chunk_size) {
-            handles.push(s.spawn(move || {
-                let mut chunk_required = HashSet::new();
-                for module_path in chunk {
-                    let firmware_names = get_firmware_deps_for_module(module_path, runner)?;
-                    for fw_name in firmware_names {
-                        let firmware_files = find_firmware_files_from_name(&fw_name, fw_dir)?;
-                        for fw_file in firmware_files {
-                            let symlinks = resolve_symlinks(&fw_file, fw_dir)?;
-                            chunk_required.extend(symlinks);
-                        }
-                    }
-                }
-                Ok::<HashSet<PathBuf>, JanitorError>(chunk_required)
-            }));
-        }
-
-        let mut final_required = HashSet::new();
-        for handle in handles {
-            match handle.join() {
-                Ok(res) => final_required.extend(res?),
-                Err(e) => std::panic::resume_unwind(e),
+    let process_module = |module_path: &Path| -> Result<HashSet<PathBuf>, JanitorError> {
+        let mut required = HashSet::new();
+        let firmware_names = get_firmware_deps_for_module(module_path, runner)?;
+        for fw_name in firmware_names {
+            let firmware_files = find_firmware_files_from_name(&fw_name, fw_dir)?;
+            for fw_file in firmware_files {
+                let symlinks = resolve_symlinks(&fw_file, fw_dir)?;
+                required.extend(symlinks);
             }
         }
-        Ok::<HashSet<PathBuf>, JanitorError>(final_required)
-    })?;
+        Ok(required)
+    };
 
-    Ok(results)
+    let results: Result<Vec<HashSet<PathBuf>>, JanitorError> = if no_parallel {
+        kernel_modules.into_iter().map(|p| process_module(&p)).collect()
+    } else {
+        kernel_modules
+            .into_par_iter()
+            .map(|p| process_module(&p))
+            .collect()
+    };
+
+    Ok(results?.into_iter().flatten().collect())
 }
 
 fn resolve_symlinks(path: &Path, base_dir: &Path) -> Result<Vec<PathBuf>, JanitorError> {

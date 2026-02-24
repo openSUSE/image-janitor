@@ -3,10 +3,10 @@ use crate::config;
 use crate::error::JanitorError;
 use crate::util;
 use log::{debug, info, warn};
+use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::thread;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct Driver {
@@ -75,39 +75,29 @@ pub fn cleanup_drivers(
         }
     }
 
-    let num_threads = if no_parallel {
-        1
+    if no_parallel {
+        info!("Using 1 thread for scanning kernel modules");
     } else {
-        thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1)
+        info!("Using multiple threads for scanning kernel modules");
+    }
+
+    let driver_map: HashMap<String, Driver> = if no_parallel {
+        module_paths
+            .into_iter()
+            .map(|path| {
+                let driver = Driver::from_file(&path, runner)?;
+                Ok((driver.name.clone(), driver))
+            })
+            .collect::<Result<HashMap<_, _>, JanitorError>>()?
+    } else {
+        module_paths
+            .into_par_iter()
+            .map(|path| {
+                let driver = Driver::from_file(&path, runner)?;
+                Ok((driver.name.clone(), driver))
+            })
+            .collect::<Result<HashMap<_, _>, JanitorError>>()?
     };
-    info!("Using {} threads for scanning kernel modules", num_threads);
-
-    let chunk_size = std::cmp::max(1, module_paths.len().div_ceil(num_threads));
-
-    let driver_map = thread::scope(|s| {
-        let mut handles = Vec::new();
-        for chunk in module_paths.chunks(chunk_size) {
-            handles.push(s.spawn(move || {
-                let mut chunk_map = HashMap::new();
-                for path in chunk {
-                    let driver = Driver::from_file(path, runner)?;
-                    chunk_map.insert(driver.name.clone(), driver);
-                }
-                Ok::<HashMap<String, Driver>, JanitorError>(chunk_map)
-            }));
-        }
-
-        let mut final_map = HashMap::new();
-        for handle in handles {
-            match handle.join() {
-                Ok(res) => final_map.extend(res?),
-                Err(e) => std::panic::resume_unwind(e),
-            }
-        }
-        Ok::<HashMap<String, Driver>, JanitorError>(final_map)
-    })?;
 
     let mut to_keep: HashSet<Driver> = HashSet::new();
 
