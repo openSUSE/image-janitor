@@ -9,10 +9,9 @@ pub struct SystemCommandRunner;
 
 impl CommandRunner for SystemCommandRunner {
     fn run(&self, command: &str, args: &[&str]) -> Result<String, JanitorError> {
-        let output = Command::new(command)
-            .args(args)
-            .output()
-            .map_err(|e| JanitorError::Command(format!("Failed to execute '{}': {}", command, e)))?;
+        let output = Command::new(command).args(args).output().map_err(|e| {
+            JanitorError::Command(format!("Failed to execute '{}': {}", command, e))
+        })?;
 
         if !output.status.success() {
             return Err(JanitorError::Command(format!(

@@ -6,6 +6,7 @@ use path_clean::PathClean;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::thread;
 use walkdir::WalkDir;
 
 fn find_kernel_modules(kernel_dir: &Path) -> Result<Vec<PathBuf>, JanitorError> {
@@ -47,10 +48,7 @@ fn find_firmware_files_from_name(
             PathBuf::from(format!("{}.xz", pattern)),
             PathBuf::from(format!("{}.zst", pattern)),
         ];
-        Ok(paths_to_check
-            .into_iter()
-            .filter(|p| p.exists())
-            .collect())
+        Ok(paths_to_check.into_iter().filter(|p| p.exists()).collect())
     } else {
         let mut results = HashSet::new();
         for ext in ["", ".xz", ".zst"] {
@@ -68,22 +66,52 @@ fn find_firmware_files_from_name(
 fn get_required_firmware(
     kernel_dir: &Path,
     fw_dir: &Path,
-    runner: &dyn CommandRunner,
+    runner: &(dyn CommandRunner + Sync),
 ) -> Result<HashSet<PathBuf>, JanitorError> {
-    let mut required = HashSet::new();
     let kernel_modules = find_kernel_modules(kernel_dir)?;
 
-    for module_path in kernel_modules {
-        let firmware_names = get_firmware_deps_for_module(&module_path, runner)?;
-        for fw_name in firmware_names {
-            let firmware_files = find_firmware_files_from_name(&fw_name, fw_dir)?;
-            for fw_file in firmware_files {
-                let symlinks = resolve_symlinks(&fw_file, fw_dir)?;
-                required.extend(symlinks);
+    if kernel_modules.is_empty() {
+        return Ok(HashSet::new());
+    }
+
+    let num_threads = thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    info!("Using {} threads for finding used firmware", num_threads);
+
+    // compute how much modules to process per thread
+    let chunk_size = kernel_modules.len().div_ceil(num_threads);
+
+    let results = thread::scope(|s| {
+        let mut handles = Vec::new();
+        for chunk in kernel_modules.chunks(chunk_size) {
+            handles.push(s.spawn(move || {
+                let mut chunk_required = HashSet::new();
+                for module_path in chunk {
+                    let firmware_names = get_firmware_deps_for_module(module_path, runner)?;
+                    for fw_name in firmware_names {
+                        let firmware_files = find_firmware_files_from_name(&fw_name, fw_dir)?;
+                        for fw_file in firmware_files {
+                            let symlinks = resolve_symlinks(&fw_file, fw_dir)?;
+                            chunk_required.extend(symlinks);
+                        }
+                    }
+                }
+                Ok::<HashSet<PathBuf>, JanitorError>(chunk_required)
+            }));
+        }
+
+        let mut final_required = HashSet::new();
+        for handle in handles {
+            match handle.join() {
+                Ok(res) => final_required.extend(res?),
+                Err(e) => std::panic::resume_unwind(e),
             }
         }
-    }
-    Ok(required)
+        Ok::<HashSet<PathBuf>, JanitorError>(final_required)
+    })?;
+
+    Ok(results)
 }
 
 fn resolve_symlinks(path: &Path, base_dir: &Path) -> Result<Vec<PathBuf>, JanitorError> {
@@ -92,7 +120,10 @@ fn resolve_symlinks(path: &Path, base_dir: &Path) -> Result<Vec<PathBuf>, Janito
 
     // Limit the number of symlink hops to avoid infinite loops.
     for _ in 0..10 {
-        if !fs::symlink_metadata(&current_path)?.file_type().is_symlink() {
+        if !fs::symlink_metadata(&current_path)?
+            .file_type()
+            .is_symlink()
+        {
             // Not a symlink, so we're at the end of the chain.
             break;
         }
@@ -144,7 +175,7 @@ fn remove_unused_files(
             if !required_fw.contains(&relative_path) {
                 unused_size += fs::metadata(path)?.len();
                 if delete {
-                    info!("Deleting unused firmware {}", path.display());
+                    debug!("Deleting unused firmware {}", path.display());
                     fs::remove_file(path)?;
                 } else {
                     debug!("Found unused firmware {}", path.display());
@@ -157,16 +188,19 @@ fn remove_unused_files(
 
 fn remove_dangling_symlinks(fw_dir: &Path) -> Result<(), JanitorError> {
     info!("Removing dangling symlinks...");
+    let mut dangling_symlinks = 0;
     for entry in WalkDir::new(fw_dir).into_iter().filter_map(Result::ok) {
         let path = entry.path();
         if path.is_symlink() {
             // fs::metadata follows symlinks, so it will return an error for a dangling one.
             if fs::metadata(path).is_err() {
-                info!("Deleting dangling symlink {}", path.display());
+                debug!("Deleting dangling symlink {}", path.display());
+                dangling_symlinks += 1;
                 fs::remove_file(path)?;
             }
         }
     }
+    info!("Removed {} dangling symlinks", dangling_symlinks);
     Ok(())
 }
 
@@ -176,20 +210,24 @@ fn remove_empty_directories(fw_dir: &Path) -> Result<(), JanitorError> {
     let mut dirs_to_check: Vec<PathBuf> = WalkDir::new(fw_dir)
         .into_iter()
         .filter_map(Result::ok)
-        .filter(|e| e.path().is_dir())
+        // ignore symlinks, they are processed separately
+        .filter(|e| e.path().is_dir() && !e.path().is_symlink())
         .map(|e| e.path().to_path_buf())
         .collect();
 
     // Sort by depth, deepest first.
     dirs_to_check.sort_by_key(|p| std::cmp::Reverse(p.components().count()));
 
+    let mut empty_dirs = 0;
     for dir_path in dirs_to_check {
         // Only remove if it's empty and not the root firmware directory itself.
         if dir_path != fw_dir && fs::read_dir(&dir_path)?.next().is_none() {
-            info!("Deleting empty directory {}", dir_path.display());
+            debug!("Deleting empty directory {}", dir_path.display());
             fs::remove_dir(dir_path)?;
+            empty_dirs += 1;
         }
     }
+    info!("Removed {} empty directories", empty_dirs);
     Ok(())
 }
 
@@ -197,13 +235,14 @@ pub fn cleanup_firmware(
     module_dir: &Path,
     fw_dir: &Path,
     delete: bool,
-    runner: &dyn CommandRunner,
+    runner: &(dyn CommandRunner + Sync),
 ) -> Result<(), JanitorError> {
     let kernel_dir = util::find_kernel_dir(module_dir)?;
     info!("Scanning kernel modules in {}", kernel_dir.display());
 
     let required_fw_abs = get_required_firmware(&kernel_dir, fw_dir, runner)?;
-    let required_fw: HashSet<_> = required_fw_abs.into_iter()
+    let required_fw: HashSet<_> = required_fw_abs
+        .into_iter()
         .map(|p| p.strip_prefix(fw_dir).unwrap().to_path_buf())
         .collect();
 
@@ -212,9 +251,15 @@ pub fn cleanup_firmware(
     if delete {
         remove_dangling_symlinks(fw_dir)?;
         remove_empty_directories(fw_dir)?;
+        // removing empty directories might create dangling symlinks, so run the removal again
+        remove_dangling_symlinks(fw_dir)?;
     }
 
-    info!("Potential savings: {} ({} MiB)", unused_size, unused_size >> 20);
+    info!(
+        "Potential savings: {} bytes ({} MiB)",
+        unused_size,
+        unused_size >> 20
+    );
 
     Ok(())
 }
@@ -238,7 +283,10 @@ mod tests {
             } else {
                 format!("{} {}", command, args.join(" "))
             };
-            self.responses.get(&key).cloned().ok_or(JanitorError::Command(format!("Not mocked: {}", key)))
+            self.responses
+                .get(&key)
+                .cloned()
+                .ok_or(JanitorError::Command(format!("Not mocked: {}", key)))
         }
     }
 

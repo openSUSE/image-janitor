@@ -12,8 +12,8 @@ pub fn read_config(
     let mut lines = Vec::<String>::new();
     for path in paths {
         info!("Reading config file: {}", path);
-        let content = fs::read_to_string(path)
-            .map_err(|e| JanitorError::ConfigRead(path.to_string(), e))?;
+        let content =
+            fs::read_to_string(path).map_err(|e| JanitorError::ConfigRead(path.to_string(), e))?;
         lines.extend(content.lines().map(String::from));
     }
 
@@ -26,9 +26,8 @@ pub fn read_config(
     debug!("Current architecture: {}", arch);
     let filtered_lines = arch_filter(lines, &arch);
 
-    let (delete_lines, keep_lines): (Vec<_>, Vec<_>) = filtered_lines
-        .into_iter()
-        .partition(|l| l.starts_with('-'));
+    let (delete_lines, keep_lines): (Vec<_>, Vec<_>) =
+        filtered_lines.into_iter().partition(|l| l.starts_with('-'));
 
     let to_keep = keep_lines
         .into_iter()
@@ -148,8 +147,7 @@ mod tests {
         )
         .unwrap();
 
-        let (to_keep, to_delete) =
-            read_config(&[config_path.to_str().unwrap()], &runner).unwrap();
+        let (to_keep, to_delete) = read_config(&[config_path.to_str().unwrap()], &runner).unwrap();
 
         assert_eq!(to_keep.len(), 1);
         assert_eq!(to_delete.len(), 1);

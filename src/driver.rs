@@ -6,6 +6,7 @@ use log::{debug, info, warn};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::thread;
 use walkdir::WalkDir;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -17,7 +18,10 @@ struct Driver {
 
 impl Driver {
     fn from_file(path: &Path, runner: &dyn CommandRunner) -> Result<Self, JanitorError> {
-        let deps_str = match runner.run("/usr/sbin/modinfo", &["-F", "depends", path.to_str().unwrap()]) {
+        let deps_str = match runner.run(
+            "/usr/sbin/modinfo",
+            &["-F", "depends", path.to_str().unwrap()],
+        ) {
             Ok(s) => s,
             Err(e) => {
                 warn!("modinfo for {} failed: {}", path.display(), e);
@@ -42,7 +46,11 @@ impl Driver {
             .unwrap()
             .to_string();
 
-        Ok(Driver { name, path: path.to_path_buf(), deps })
+        Ok(Driver {
+            name,
+            path: path.to_path_buf(),
+            deps,
+        })
     }
 }
 
@@ -50,32 +58,63 @@ pub fn cleanup_drivers(
     config_paths: &[&str],
     module_dir: &Path,
     delete: bool,
-    runner: &dyn CommandRunner,
+    runner: &(dyn CommandRunner + Sync),
 ) -> Result<(), JanitorError> {
     let (to_keep_re, to_delete_re) = config::read_config(config_paths, runner)?;
     let kernel_dir = util::find_kernel_dir(module_dir)?;
     info!("Scanning kernel modules in {}", kernel_dir.display());
 
-    let mut driver_map = HashMap::new();
+    let mut module_paths = Vec::new();
     for entry in WalkDir::new(&kernel_dir) {
         let entry = entry?;
         let path = entry.path();
         if path.is_file()
-            && (
-                path.extension().is_some_and(|e| e == "ko") ||
-                path.to_str().is_some_and(|s| s.ends_with(".ko.xz")) ||
-                path.to_str().is_some_and(|s| s.ends_with(".ko.zst"))
-            )
+            && (path.extension().is_some_and(|e| e == "ko")
+                || path.to_str().is_some_and(|s| s.ends_with(".ko.xz"))
+                || path.to_str().is_some_and(|s| s.ends_with(".ko.zst")))
         {
-            let driver = Driver::from_file(path, runner)?;
-            driver_map.insert(driver.name.clone(), driver);
+            module_paths.push(path.to_path_buf());
         }
     }
+
+    let num_threads = thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    info!("Using {} threads for scanning kernel modules", num_threads);
+
+    let chunk_size = std::cmp::max(1, module_paths.len().div_ceil(num_threads));
+
+    let driver_map = thread::scope(|s| {
+        let mut handles = Vec::new();
+        for chunk in module_paths.chunks(chunk_size) {
+            handles.push(s.spawn(move || {
+                let mut chunk_map = HashMap::new();
+                for path in chunk {
+                    let driver = Driver::from_file(path, runner)?;
+                    chunk_map.insert(driver.name.clone(), driver);
+                }
+                Ok::<HashMap<String, Driver>, JanitorError>(chunk_map)
+            }));
+        }
+
+        let mut final_map = HashMap::new();
+        for handle in handles {
+            match handle.join() {
+                Ok(res) => final_map.extend(res?),
+                Err(e) => std::panic::resume_unwind(e),
+            }
+        }
+        Ok::<HashMap<String, Driver>, JanitorError>(final_map)
+    })?;
 
     let mut to_keep: HashSet<Driver> = HashSet::new();
 
     for driver in driver_map.values() {
-        let kernel_path = driver.path.strip_prefix(&kernel_dir).unwrap().to_str()
+        let kernel_path = driver
+            .path
+            .strip_prefix(&kernel_dir)
+            .unwrap()
+            .to_str()
             .ok_or_else(|| JanitorError::InvalidPath(driver.path.clone()))?;
 
         if to_delete_re.iter().any(|r| r.is_match(kernel_path)) {
@@ -94,25 +133,36 @@ pub fn cleanup_drivers(
                 // If the dependency was not already in to_keep, add it and
                 // put it on the worklist to process its dependencies.
                 if to_keep.insert(dep_driver.clone()) {
-                    info!("Keep dependant driver {}", dep_driver.path.display());
+                    debug!("Keep dependant driver {}", dep_driver.path.display());
                     worklist.push(dep_driver.clone());
                 }
             }
         }
     }
 
-    let to_delete: Vec<_> = driver_map.values()
+    let to_delete: Vec<_> = driver_map
+        .values()
         .filter(|d| !to_keep.contains(d))
         .collect();
 
     info!("Found {} drivers to delete", to_delete.len());
-    debug!("Drivers to delete: {:?}", to_delete.iter().map(|d| &d.path).collect::<Vec<_>>());
+    debug!(
+        "Drivers to delete: {:?}",
+        to_delete.iter().map(|d| &d.path).collect::<Vec<_>>()
+    );
 
     if delete {
+        let mut deleted_size = 0;
         for driver in to_delete {
-            info!("Deleting {}", driver.path.display());
+            debug!("Deleting {}", driver.path.display());
+            deleted_size += fs::metadata(&driver.path)?.len();
             fs::remove_file(&driver.path)?;
         }
+        info!(
+            "Deleted drivers: {} bytes ({} MiB)",
+            deleted_size,
+            deleted_size >> 20
+        );
     }
 
     Ok(())
@@ -136,7 +186,10 @@ mod tests {
             } else {
                 format!("{} {}", command, args.join(" "))
             };
-            self.responses.get(&key).cloned().ok_or(JanitorError::Command(format!("Not mocked: {}", key)))
+            self.responses
+                .get(&key)
+                .cloned()
+                .ok_or(JanitorError::Command(format!("Not mocked: {}", key)))
         }
     }
 

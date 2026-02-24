@@ -65,6 +65,8 @@ mod tests {
         fs::create_dir(modules_dir.join("6.0.0-test")).unwrap();
         fs::create_dir(modules_dir.join("6.1.0-test")).unwrap(); // This should be picked due to sorting
 
-        assert!(find_kernel_dir(modules_dir).unwrap().ends_with("6.1.0-test"));
+        assert!(find_kernel_dir(modules_dir)
+            .unwrap()
+            .ends_with("6.1.0-test"));
     }
 }
