@@ -66,6 +66,7 @@ fn find_firmware_files_from_name(
 fn get_required_firmware(
     kernel_dir: &Path,
     fw_dir: &Path,
+    no_parallel: bool,
     runner: &(dyn CommandRunner + Sync),
 ) -> Result<HashSet<PathBuf>, JanitorError> {
     let kernel_modules = find_kernel_modules(kernel_dir)?;
@@ -74,9 +75,13 @@ fn get_required_firmware(
         return Ok(HashSet::new());
     }
 
-    let num_threads = thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1);
+    let num_threads = if no_parallel {
+        1
+    } else {
+        thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+    };
     info!("Using {} threads for finding used firmware", num_threads);
 
     // compute how much modules to process per thread
@@ -235,12 +240,13 @@ pub fn cleanup_firmware(
     module_dir: &Path,
     fw_dir: &Path,
     delete: bool,
+    no_parallel: bool,
     runner: &(dyn CommandRunner + Sync),
 ) -> Result<(), JanitorError> {
     let kernel_dir = util::find_kernel_dir(module_dir)?;
     info!("Scanning kernel modules in {}", kernel_dir.display());
 
-    let required_fw_abs = get_required_firmware(&kernel_dir, fw_dir, runner)?;
+    let required_fw_abs = get_required_firmware(&kernel_dir, fw_dir, no_parallel, runner)?;
     let required_fw: HashSet<_> = required_fw_abs
         .into_iter()
         .map(|p| p.strip_prefix(fw_dir).unwrap().to_path_buf())
@@ -310,7 +316,7 @@ mod tests {
         );
         let runner = MockCommandRunner { responses };
 
-        let required_fw = get_required_firmware(&kernel_dir, &fw_dir, &runner).unwrap();
+        let required_fw = get_required_firmware(&kernel_dir, &fw_dir, false, &runner).unwrap();
         assert_eq!(required_fw.len(), 1);
         assert!(required_fw.contains(&fw1_path));
     }
@@ -339,7 +345,7 @@ mod tests {
         );
         let runner = MockCommandRunner { responses };
 
-        let required_fw = get_required_firmware(&kernel_dir, &fw_dir, &runner).unwrap();
+        let required_fw = get_required_firmware(&kernel_dir, &fw_dir, false, &runner).unwrap();
         assert_eq!(required_fw.len(), 1);
         assert!(required_fw.contains(&fw_file1));
         assert!(!required_fw.contains(&fw_file2));
@@ -579,7 +585,7 @@ mod tests {
         );
         let runner = MockCommandRunner { responses };
 
-        let required_fw = get_required_firmware(&kernel_dir, &fw_dir, &runner).unwrap();
+        let required_fw = get_required_firmware(&kernel_dir, &fw_dir, false, &runner).unwrap();
         assert_eq!(required_fw.len(), 1);
         assert!(required_fw.contains(&fw_file1));
         assert!(!required_fw.contains(&fw_file2));
@@ -634,7 +640,7 @@ mod tests {
 
         let runner = MockCommandRunner { responses };
 
-        let required_fw = get_required_firmware(&kernel_dir, &fw_dir, &runner).unwrap();
+        let required_fw = get_required_firmware(&kernel_dir, &fw_dir, false, &runner).unwrap();
         assert_eq!(required_fw.len(), 100);
         for fw_path in expected_fw {
             assert!(
@@ -643,5 +649,30 @@ mod tests {
                 fw_path.display()
             );
         }
+    }
+
+    #[test]
+    fn test_get_required_firmware_no_parallel() {
+        let temp_dir = tempdir().unwrap();
+        let kernel_dir = temp_dir.path().join("lib/modules/6.1.0-test");
+        fs::create_dir_all(&kernel_dir).unwrap();
+        let fw_dir = temp_dir.path().join("lib/firmware");
+        fs::create_dir_all(&fw_dir).unwrap();
+
+        let mod1_path = kernel_dir.join("mod1.ko");
+        fs::write(&mod1_path, "").unwrap();
+        let fw1_path = fw_dir.join("fw1.bin");
+        fs::write(&fw1_path, "").unwrap();
+
+        let mut responses = HashMap::new();
+        responses.insert(
+            format!("/usr/sbin/modinfo -F firmware {}", mod1_path.display()),
+            "fw1.bin".to_string(),
+        );
+        let runner = MockCommandRunner { responses };
+
+        let required_fw = get_required_firmware(&kernel_dir, &fw_dir, true, &runner).unwrap();
+        assert_eq!(required_fw.len(), 1);
+        assert!(required_fw.contains(&fw1_path));
     }
 }

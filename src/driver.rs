@@ -58,6 +58,7 @@ pub fn cleanup_drivers(
     config_paths: &[&str],
     module_dir: &Path,
     delete: bool,
+    no_parallel: bool,
     runner: &(dyn CommandRunner + Sync),
 ) -> Result<(), JanitorError> {
     let (to_keep_re, to_delete_re) = config::read_config(config_paths, runner)?;
@@ -77,9 +78,13 @@ pub fn cleanup_drivers(
         }
     }
 
-    let num_threads = thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1);
+    let num_threads = if no_parallel {
+        1
+    } else {
+        thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+    };
     info!("Using {} threads for scanning kernel modules", num_threads);
 
     let chunk_size = std::cmp::max(1, module_paths.len().div_ceil(num_threads));
@@ -235,14 +240,28 @@ mod tests {
         let runner = MockCommandRunner { responses };
 
         // Test dry run
-        cleanup_drivers(&[config_path.to_str().unwrap()], module_dir, false, &runner).unwrap();
+        cleanup_drivers(
+            &[config_path.to_str().unwrap()],
+            module_dir,
+            false,
+            false,
+            &runner,
+        )
+        .unwrap();
         assert!(mod_a_path.exists());
         assert!(mod_b_path.exists());
         assert!(mod_c_path.exists());
         assert!(mod_d_path.exists());
 
         // Test delete
-        cleanup_drivers(&[config_path.to_str().unwrap()], module_dir, true, &runner).unwrap();
+        cleanup_drivers(
+            &[config_path.to_str().unwrap()],
+            module_dir,
+            true,
+            false,
+            &runner,
+        )
+        .unwrap();
         assert!(mod_a_path.exists());
         assert!(mod_b_path.exists());
         assert!(mod_c_path.exists());
@@ -286,7 +305,14 @@ mod tests {
         let runner = MockCommandRunner { responses };
 
         // Test delete - should keep all modules because mod0 depends on mod1, mod1 on mod2, ..., mod99 on nothing
-        cleanup_drivers(&[config_path.to_str().unwrap()], module_dir, true, &runner).unwrap();
+        cleanup_drivers(
+            &[config_path.to_str().unwrap()],
+            module_dir,
+            true,
+            false,
+            &runner,
+        )
+        .unwrap();
 
         for mod_path in modules {
             assert!(
@@ -304,6 +330,7 @@ mod tests {
             &[config_path_empty.to_str().unwrap()],
             module_dir,
             true,
+            false,
             &runner,
         )
         .unwrap();
@@ -316,5 +343,39 @@ mod tests {
                 mod_path.display()
             );
         }
+    }
+
+    #[test]
+    fn test_cleanup_drivers_no_parallel() {
+        let temp_dir = tempdir().unwrap();
+        let module_dir = temp_dir.path();
+        let kernel_dir = module_dir.join("6.1.0-test");
+        fs::create_dir_all(&kernel_dir).unwrap();
+
+        let mod_a_path = kernel_dir.join("a.ko");
+        fs::write(&mod_a_path, "").unwrap();
+
+        let config_path = temp_dir.path().join("test.conf");
+        fs::write(&config_path, "a.ko").unwrap();
+
+        let mut responses = HashMap::new();
+        responses.insert(
+            format!("/usr/sbin/modinfo -F depends {}", mod_a_path.display()),
+            "".to_string(),
+        );
+        responses.insert("arch".to_string(), "x86_64".to_string());
+
+        let runner = MockCommandRunner { responses };
+
+        cleanup_drivers(
+            &[config_path.to_str().unwrap()],
+            module_dir,
+            true,
+            true, // no_parallel = true
+            &runner,
+        )
+        .unwrap();
+
+        assert!(mod_a_path.exists());
     }
 }

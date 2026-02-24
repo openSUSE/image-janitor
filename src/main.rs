@@ -14,6 +14,10 @@ struct Cli {
     /// Enable verbose logging.
     #[arg(short, long, default_value_t = false)]
     verbose: bool,
+
+    /// Disable parallelism.
+    #[arg(long, default_value_t = false)]
+    no_parallel: bool,
 }
 
 #[derive(clap::Subcommand)]
@@ -63,12 +67,19 @@ fn main() -> Result<()> {
             config_files,
         } => {
             info!(
-                "Driver cleanup running. Delete: {}, Module Dir: {}",
+                "Driver cleanup running. Delete: {}, Module Dir: {}, Parallelism: {}",
                 delete,
-                module_dir.display()
+                module_dir.display(),
+                !cli.no_parallel
             );
             let config_paths: Vec<&str> = config_files.split(',').collect();
-            driver::cleanup_drivers(&config_paths, module_dir, *delete, &runner)?;
+            driver::cleanup_drivers(
+                &config_paths,
+                module_dir,
+                *delete,
+                cli.no_parallel,
+                &runner,
+            )?;
         }
         Commands::FwCleanup {
             delete,
@@ -76,12 +87,19 @@ fn main() -> Result<()> {
             firmware_dir,
         } => {
             info!(
-                "Firmware cleanup running. Delete: {}, Module Dir: {}, Firmware Dir: {}",
+                "Firmware cleanup running. Delete: {}, Module Dir: {}, Firmware Dir: {}, Parallelism: {}",
                 delete,
                 module_dir.display(),
-                firmware_dir.display()
+                firmware_dir.display(),
+                !cli.no_parallel
             );
-            firmware::cleanup_firmware(module_dir, firmware_dir, *delete, &runner)?;
+            firmware::cleanup_firmware(
+                module_dir,
+                firmware_dir,
+                *delete,
+                cli.no_parallel,
+                &runner,
+            )?;
         }
     }
 
