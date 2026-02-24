@@ -1,7 +1,7 @@
 # Rules for AGENTS
 
 ## Dev environment tips
-- When working on a feature, first implement the changes, check it builds and passes existing tests, create a git commit, then create a testcase and do a separate git commit as fixup
+- When working on a feature, Use red/green TDD. First create a git commit with the new testcase then do the code changes in a separate git commit.
 - Never try to do git push
 
 ## Testing instructions
