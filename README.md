@@ -6,10 +6,16 @@ Image Janitor is a command-line tool for cleaning up unused kernel drivers and f
 
 *   **Driver Cleanup**: Removes unused kernel drivers.
 *   **Firmware Cleanup**: Removes unused firmware files.
+*   **Parallelism**: Uses multiple threads for scanning kernel modules and firmware by default. Parallelism can be disabled using the `--no-parallel` flag.
 *   **Configuration**: Uses configuration files to determine which files to keep and which to delete.
 *   **Dependency Resolution**: Resolves dependencies between kernel modules to avoid breaking the system.
 
 ## Usage
+
+### Global Options
+
+*   `--verbose`, `-v`: Enable verbose logging.
+*   `--no-parallel`: Disable parallelism.
 
 ### Driver Cleanup
 
