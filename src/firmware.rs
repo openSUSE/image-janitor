@@ -516,6 +516,49 @@ mod tests {
         assert!(!dir_a.exists());
     }
 
+    /// Regression test: a symlink pointing to a directory becomes dangling once
+    /// that directory is removed by `remove_empty_directories`.  `cleanup_firmware`
+    /// must run `remove_dangling_symlinks` a second time *after* the empty-dir
+    /// pass to clean up those newly-dangling symlinks.
+    #[test]
+    fn test_cleanup_firmware_removes_symlinks_dangling_after_empty_dir_removal() {
+        let temp_dir = tempdir().unwrap();
+        // cleanup_firmware expects module_dir to contain a versioned kernel subdir.
+        let module_dir = temp_dir.path().join("lib/modules");
+        let kernel_dir = module_dir.join("6.1.0-test");
+        let fw_dir = temp_dir.path().join("firmware");
+        fs::create_dir_all(&kernel_dir).unwrap();
+
+        // Firmware layout:
+        //   firmware/
+        //     base/gsp/          ← real dir, all files will be deleted (unreferenced)
+        //       fw1.bin
+        //     alias -> base      ← symlink-to-dir; becomes dangling once base/ is gone
+        fs::create_dir_all(fw_dir.join("base/gsp")).unwrap();
+        fs::write(fw_dir.join("base/gsp/fw1.bin"), "data").unwrap();
+        symlink(fw_dir.join("base"), fw_dir.join("alias")).unwrap();
+
+        // No kernel modules → no required firmware → everything gets deleted.
+        let runner = MockCommandRunner {
+            responses: HashMap::new(),
+        };
+        cleanup_firmware(&module_dir, &fw_dir, true, true, &runner).unwrap();
+
+        // After cleanup:
+        // 1. fw1.bin deleted (unreferenced)
+        // 2. base/gsp/ deleted (empty dir)
+        // 3. base/ deleted (empty dir)
+        // 4. alias/ is now dangling → must be deleted in the second pass
+        assert!(
+            !fw_dir.join("alias").exists() && !fw_dir.join("alias").is_symlink(),
+            "dangling symlink 'alias' should have been removed after empty-dir pass"
+        );
+        assert!(
+            !fw_dir.join("base").exists(),
+            "empty dir 'base' should be gone"
+        );
+    }
+
     #[test]
     fn test_find_kernel_modules() {
         let temp_dir = tempdir().unwrap();
