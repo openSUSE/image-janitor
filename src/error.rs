@@ -20,4 +20,7 @@ pub enum JanitorError {
 
     #[error("Could not read config file '{0}': {1}")]
     ConfigRead(String, std::io::Error),
+
+    #[error("Invalid glob pattern '{0}': {1}")]
+    GlobPattern(String, #[source] glob::PatternError),
 }

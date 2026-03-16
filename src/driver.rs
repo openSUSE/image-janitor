@@ -17,10 +17,10 @@ struct Driver {
 
 impl Driver {
     fn from_file(path: &Path, runner: &dyn CommandRunner) -> Result<Self, JanitorError> {
-        let deps_str = match runner.run(
-            "/usr/sbin/modinfo",
-            &["-F", "depends", path.to_str().unwrap()],
-        ) {
+        let path_str = path
+            .to_str()
+            .ok_or_else(|| JanitorError::InvalidPath(path.to_path_buf()))?;
+        let deps_str = match runner.run("/usr/sbin/modinfo", &["-F", "depends", path_str]) {
             Ok(s) => s,
             Err(e) => {
                 warn!("modinfo for {} failed: {}", path.display(), e);
@@ -35,14 +35,15 @@ impl Driver {
             .map(String::from)
             .collect();
 
-        let name = path
+        let file_name = path
             .file_name()
-            .unwrap()
+            .ok_or_else(|| JanitorError::InvalidPath(path.to_path_buf()))?;
+        let name = file_name
             .to_str()
-            .unwrap()
+            .ok_or_else(|| JanitorError::InvalidPath(path.to_path_buf()))?
             .split('.')
             .next()
-            .unwrap()
+            .ok_or_else(|| JanitorError::InvalidPath(path.to_path_buf()))?
             .to_string();
 
         Ok(Driver {
@@ -105,7 +106,7 @@ pub fn cleanup_drivers(
         let kernel_path = driver
             .path
             .strip_prefix(&kernel_dir)
-            .unwrap()
+            .map_err(|_| JanitorError::InvalidPath(driver.path.clone()))?
             .to_str()
             .ok_or_else(|| JanitorError::InvalidPath(driver.path.clone()))?;
 

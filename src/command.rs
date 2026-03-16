@@ -21,6 +21,11 @@ impl CommandRunner for SystemCommandRunner {
             )));
         }
 
-        Ok(String::from_utf8(output.stdout).unwrap().trim().to_string())
+        Ok(String::from_utf8(output.stdout)
+            .map_err(|e| {
+                JanitorError::Command(format!("'{}' output is not valid UTF-8: {}", command, e))
+            })?
+            .trim()
+            .to_string())
     }
 }

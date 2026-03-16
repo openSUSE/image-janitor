@@ -26,10 +26,10 @@ fn get_firmware_deps_for_module(
     module_path: &Path,
     runner: &dyn CommandRunner,
 ) -> Result<Vec<String>, JanitorError> {
-    let firmware_list = runner.run(
-        "/usr/sbin/modinfo",
-        &["-F", "firmware", module_path.to_str().unwrap()],
-    )?;
+    let module_path_str = module_path
+        .to_str()
+        .ok_or_else(|| JanitorError::InvalidPath(module_path.to_path_buf()))?;
+    let firmware_list = runner.run("/usr/sbin/modinfo", &["-F", "firmware", module_path_str])?;
     Ok(firmware_list.lines().map(String::from).collect())
 }
 
@@ -52,7 +52,7 @@ fn find_firmware_files_from_name(
             let pattern_with_ext = format!("{}{}", pattern, ext);
             results.extend(
                 glob::glob(&pattern_with_ext)
-                    .expect("Failed to read glob pattern")
+                    .map_err(|e| JanitorError::GlobPattern(pattern_with_ext.clone(), e))?
                     .filter_map(Result::ok),
             );
         }
@@ -162,7 +162,10 @@ fn remove_unused_files(
 
     for path in util::walk_dir(fw_dir)? {
         if path.is_file() {
-            let relative_path = path.strip_prefix(fw_dir).unwrap().to_path_buf();
+            let relative_path = path
+                .strip_prefix(fw_dir)
+                .map_err(|_| JanitorError::InvalidPath(path.clone()))?
+                .to_path_buf();
             if !required_fw.contains(&relative_path) {
                 unused_size += fs::metadata(&path)?.len();
                 if delete {
@@ -257,8 +260,12 @@ pub fn cleanup_firmware(
     let required_fw_abs = get_required_firmware(&kernel_dir, fw_dir, no_parallel, runner)?;
     let required_fw: HashSet<_> = required_fw_abs
         .into_iter()
-        .map(|p| p.strip_prefix(fw_dir).unwrap().to_path_buf())
-        .collect();
+        .map(|p| {
+            p.strip_prefix(fw_dir)
+                .map(|rel| rel.to_path_buf())
+                .map_err(|_| JanitorError::InvalidPath(p.clone()))
+        })
+        .collect::<Result<HashSet<_>, _>>()?;
 
     let unused_size = remove_unused_files(fw_dir, &required_fw, delete)?;
 
