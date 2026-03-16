@@ -18,7 +18,7 @@ rayon = "1.10"
 [target.'cfg(not(windows))'.dev-dependencies]
 tempfile = "3"
 ureq = { version = "3", default-features = false, features = ["rustls", "rustls-webpki-roots"] }
-indicatif = { version = "0.17", default-features = false, features = ["rayon"] }
+indicatif = { version = "0.18", default-features = false, features = ["rayon"] }
 
 [[bench]]
 name = "parallelism"
