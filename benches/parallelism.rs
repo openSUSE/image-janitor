@@ -42,19 +42,18 @@ fn download_and_extract(dir: &Path) {
     let x86_64_repo = format!("{}x86_64/", repo_base);
     let noarch_repo = format!("{}noarch/", repo_base);
 
-    let client = reqwest::blocking::Client::builder()
+    let client = ureq::Agent::config_builder()
         .user_agent("image-janitor-benchmark")
-        .redirect(reqwest::redirect::Policy::default())
         .build()
-        .expect("Failed to build reqwest client");
+        .new_agent();
 
     println!("Fetching list of kernel packages...");
-    let response = client
+    let html = client
         .get(&x86_64_repo)
-        .send()
-        .expect("Failed to fetch kernel repo list");
-    let html = response
-        .text()
+        .call()
+        .expect("Failed to fetch kernel repo list")
+        .body_mut()
+        .read_to_string()
         .expect("Failed to read kernel repo list response");
 
     let kernel_re =
@@ -69,12 +68,12 @@ fn download_and_extract(dir: &Path) {
     let mut tasks = vec![(format!("{}{}", x86_64_repo, kernel_rpm), kernel_rpm.clone())];
 
     println!("Fetching list of firmware packages...");
-    let response = client
+    let html = client
         .get(&noarch_repo)
-        .send()
-        .expect("Failed to fetch firmware repo list");
-    let html = response
-        .text()
+        .call()
+        .expect("Failed to fetch firmware repo list")
+        .body_mut()
+        .read_to_string()
         .expect("Failed to read firmware repo list response");
 
     let re = regex::Regex::new(r#"href="./(kernel-firmware-[a-z0-9-]*-[0-9][^"]*\.rpm)""#).unwrap();
@@ -101,18 +100,24 @@ fn download_and_extract(dir: &Path) {
         pb.set_message(rpm.clone());
 
         if !rpm_path.exists() {
-            let mut response = client.get(&url).send().expect("Failed to download RPM");
-            if !response.status().is_success() {
-                panic!("Failed to download {}: {}", url, response.status());
-            }
-            if let Some(len) = response.content_length() {
+            let mut response = client
+                .get(&url)
+                .call()
+                .unwrap_or_else(|e| panic!("Failed to download {}: {}", url, e));
+            if let Some(len) = response
+                .headers()
+                .get("content-length")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok())
+            {
                 pb.set_length(len);
             }
 
             let mut file = fs::File::create(&rpm_path).expect("Failed to create RPM file");
             let mut buffer = [0; 8192];
+            let mut reader = response.body_mut().as_reader();
             loop {
-                let n = response
+                let n = reader
                     .read(&mut buffer)
                     .expect("Failed to read from response");
                 if n == 0 {
